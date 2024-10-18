@@ -1,4 +1,11 @@
 import yfinance as yf
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from concurrent.futures import ThreadPoolExecutor
+import streamlit.web.bootstrap
+import time
 
 
 def calculate_valuation_difference(price, value):
@@ -11,15 +18,8 @@ def calculate_valuation_difference(price, value):
     """
     if value == 0:
         return "Intrinsic value is 0, calculation not possible."
-
-    # Calculate percentage difference
     percentage_difference = ((price - value) / value) * 100
-
-    # Determine whether it's overvalued or undervalued
-    if percentage_difference > 0:
-        return f"Overvalued by {percentage_difference:.2f}%"
-    else:
-        return f"Undervalued by {-percentage_difference:.2f}%"
+    return f"{'Overvalued' if percentage_difference > 0 else 'Undervalued'} by {abs(percentage_difference):.2f}%"
 
 
 def GrahamValuation(symbol, avg_aaa_rate, current_aaa_rate, pe_no_growth=8.5):
@@ -44,51 +44,109 @@ def GrahamValuation(symbol, avg_aaa_rate, current_aaa_rate, pe_no_growth=8.5):
         - The stock's estimated growth rate is multiplied by 2, following Graham's approach for a growing company.
     """
     ticker = yf.Ticker(symbol)
-    eps = ticker.info.get("trailingEps", "EPS data not available")
-    growth = (ticker.growth_estimates.iloc[5].iloc[0]) * 100
+    eps = ticker.info.get(
+        "trailingEps", 0
+    )  # Use default value of 0 if EPS not available
+    growth = ticker.growth_estimates.iloc[5].iloc[0] * 100
+    hist = ticker.info.get("previousClose", 0)
     two_growth = 2 * growth
     value = (eps * (pe_no_growth + two_growth) * avg_aaa_rate) / current_aaa_rate
-    return value, ticker
+    return value, hist
 
 
-def main():
-    stock = "JEPQ"
+def fetch_valuation_data(symbol, avg_aaa, current_aaa):
+    value, hist = GrahamValuation(symbol, avg_aaa, current_aaa)
+    undervalued = value > hist
+    status = calculate_valuation_difference(hist, value)
+    return symbol, hist, value, undervalued, status
+
+
+def main(stock):
+    start_time = time.time()
     spy = yf.Ticker(stock)
     data = spy.funds_data
     holdings = data.top_holdings.loc[:, ["Holding Percent"]].reset_index()
-    print(holdings)
+    other = 1 - sum(holdings["Holding Percent"])
+    holdings_for_chart = holdings.copy()
+    holdings_for_chart.loc[len(holdings_for_chart)] = ["Other", other]
+
+    fig = px.pie(
+        holdings_for_chart,
+        values="Holding Percent",
+        names="Symbol",
+        title=f"{stock} Holdings",
+        color_discrete_sequence=px.colors.sequential.RdBu,
+    )
+
+    fig.update_traces(textposition="inside", textinfo="percent+label")
+    st.plotly_chart(fig)
 
     tickers = holdings["Symbol"].to_list()
-
-    over = 0
-    under = 0
     avg_aaa = 4.4  # FRED
     current_aaa = 4.68  # FRED
 
-    for symbol in tickers:
-        value, ticker = GrahamValuation(symbol, avg_aaa, current_aaa)
-        hist = ticker.history(period="1d").reset_index()["Close"].to_list()[0]
-        undervalued = value > hist
-        if undervalued:
-            under = under + 1
-        else:
-            over = over + 1
-        print(
-            symbol
-            + " "
-            + str(round(hist, 2))
-            + "/"
-            + str(round(value, 2))
-            + " "
-            + (calculate_valuation_difference(hist, value))
-        )
-    if under > over:
-        print(f"{stock} is undervalued at {under}/{over} for the top holdings")
-    elif over > under:
-        print(f"{stock} is overvalued at {over}/{under} for the top holdings")
-    else:
-        print(f"{stock} is fairly valued at {under}/{over} for the top holdings")
+    with st.spinner("Calculating..."):
+        # Parallel processing for faster API calls
+        with ThreadPoolExecutor() as executor:
+            results = list(
+                executor.map(
+                    lambda symbol: fetch_valuation_data(symbol, avg_aaa, current_aaa),
+                    tickers,
+                )
+            )
 
+        prices = []
+        values = []
+        over, under = 0, 0
+
+        for result in results:
+            symbol, hist, value, undervalued, status = result
+            prices.append(hist)
+            values.append(value)
+            if undervalued:
+                under += 1
+            else:
+                over += 1
+            # st.text(f"{symbol}: {hist:.2f}/{value:.2f} - {status}")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.header("Overvalued")
+            st.text(over)
+        with col2:
+            st.header("Undervalued")
+            st.text(under)
+
+        df = pd.DataFrame({"tickers": tickers, "prices": prices, "values": values})
+
+        fig = go.Figure()
+        fig.add_trace(
+            go.Bar(
+                x=df["tickers"],
+                y=df["prices"],
+                name="Historical Prices",
+                marker_color="green",
+            )
+        )
+        fig.add_trace(
+            go.Bar(
+                x=df["tickers"], y=df["values"], name="Valuations", marker_color="red"
+            )
+        )
+        fig.update_layout(
+            title="Price vs Valuations", barmode="group", xaxis_tickangle=-45
+        )
+        st.plotly_chart(fig)
+    end_time = time.time()
+    execution_time = end_time - start_time  # Calculate the difference
+    st.toast(f"Execution time: {execution_time:.2f} seconds")
+
+
+st.title("ETFHoldingsDecomp")
+stock = st.text_input("Enter a ETF ticker:", "SCHD")
+main(stock=stock)
 
 if __name__ == "__main__":
-    main()
+    # main()
+    if "__streamlitmagic__" not in locals():
+        streamlit.web.bootstrap.run(__file__, False, [], {})
