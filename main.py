@@ -111,7 +111,7 @@ def fetch_valuation_data(
     return symbol, hist, value, undervalued, status, dcfvalue
 
 
-def main(stock, required_rate, perpetual_rate, cfgrowth):
+def main(stock, required_rate, perpetual_rate, cfgrowth, avgaaa, currentaaa):
     start_time = time.time()
     spy = yf.Ticker(stock)
     data = spy.funds_data
@@ -132,8 +132,6 @@ def main(stock, required_rate, perpetual_rate, cfgrowth):
     st.plotly_chart(fig)
 
     tickers = holdings["Symbol"].to_list()
-    avg_aaa = 4.4  # FRED
-    current_aaa = 4.68  # FRED
 
     model = st.radio(
         label="Model",
@@ -148,8 +146,8 @@ def main(stock, required_rate, perpetual_rate, cfgrowth):
                 executor.map(
                     lambda symbol: fetch_valuation_data(
                         symbol,
-                        avg_aaa,
-                        current_aaa,
+                        avgaaa,
+                        currentaaa,
                         required_rate,
                         perpetual_rate,
                         cfgrowth,
@@ -231,14 +229,23 @@ with col2:
     perpetual_rate = st.number_input("Perpetual Rate", 0.0, 1.0, step=0.01, value=0.02)
 with col3:
     cfgrowth = st.number_input("CF Growth Rate", 0.0, 1.0, step=0.01, value=0.03)
+st.markdown("#### Graham Model Settings:")
+col1, col2 = st.columns(2)
+with col1:
+    avg_aaa = st.number_input("Average AAA Bond Rate", 0.0, 15.0, step=0.01, value=4.4)
+with col2:
+    current_aaa = st.number_input(
+        "Current AAA Bond Rate", 0.0, 15.0, step=0.01, value=4.68
+    )
 main(
     stock=stock,
     required_rate=required_rate,
     perpetual_rate=perpetual_rate,
     cfgrowth=cfgrowth,
+    avgaaa=avg_aaa,
+    currentaaa=current_aaa,
 )
 
 if __name__ == "__main__":
-    # main()
     if "__streamlitmagic__" not in locals():
         streamlit.web.bootstrap.run(__file__, False, [], {})
