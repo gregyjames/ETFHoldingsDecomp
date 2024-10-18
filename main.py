@@ -56,64 +56,41 @@ def GrahamValuation(symbol, avg_aaa_rate, current_aaa_rate, pe_no_growth=8.5):
 
 def DCFValuation(symbol, required_rate=0.07, perpetual_rate=0.02, cfgrowth=0.03):
     """
-    Perform a Discounted Cash Flow (DCF) valuation for the given stock.
+    Perform a Discounted Cash Flow (DCF) valuation for the given stock and return the fair value per share.
 
-    This function estimates the fair value of a stock using DCF analysis. It projects future Free Cash Flows (FCFs),
-    calculates the terminal value, discounts them to present value, and determines the fair value per share.
-
-    :param symbol: The stock ticker symbol (e.g., 'AAPL') as a string.
-    :param required_rate: The discount rate or required rate of return (as a decimal). Default is 7%.
-    :param perpetual_rate: The perpetual growth rate of FCF beyond the forecasted period (as a decimal). Default is 2%.
-    :param cfgrowth: The expected annual growth rate of the FCF for the forecasted period (as a decimal). Default is 3%.
-    :return: The fair value of the stock per share (float).
+    :param symbol: Stock ticker symbol as a string (e.g., 'AAPL').
+    :param required_rate: Discount rate or required rate of return (default: 7%).
+    :param perpetual_rate: Perpetual growth rate for the terminal value (default: 2%).
+    :param cfgrowth: Expected annual growth rate of Free Cash Flow (FCF) during the forecast period (default: 3%).
+    :return: Fair value per share (float).
     """
-
-    # Create a Ticker object from yfinance for the given stock symbol
     ticker = yf.Ticker(symbol)
 
-    # Get the latest Free Cash Flow (FCF) value from the company's cash flow statement
-    # This assumes that the FCF is available and the 'Free Cash Flow' is the label in the DataFrame
-    latest_fcf = ticker.cash_flow.iloc[:, 0]["Free Cash Flow"]
+    # Attempt to retrieve necessary financial data; return None if unavailable
+    try:
+        latest_fcf = ticker.cashflow.loc["Free Cash Flow"].iloc[0]
+        outstanding = ticker.info["sharesOutstanding"]
+    except (KeyError, IndexError, TypeError):
+        return None  # Handle missing or unavailable data
 
-    # Get the number of shares outstanding (used to calculate per-share fair value)
-    outstanding = ticker.info["sharesOutstanding"]
+    # Precompute constants for discounting
+    discount_factors = [(1 + required_rate) ** year for year in range(1, 5)]
 
-    # Define the number of years over which to forecast cash flow (4-year projection)
-    years = [1, 2, 3, 4]
-
-    # Lists to store future free cash flows (ffcf), discount factors (df), and discounted free cash flows (dffcf)
-    ffcf = []  # Future free cash flows
-    df = []  # Discount factors
-    dffcf = []  # Discounted future free cash flows
-
-    # Calculate the terminal value (TV) using the perpetuity growth formula
-    # Terminal value represents the value of cash flows beyond the forecast period
+    # Calculate the terminal value, discounted to present value
     tv = latest_fcf * (1 + perpetual_rate) / (required_rate - perpetual_rate)
+    dtv = tv / discount_factors[-1]  # Discount terminal value by the last year's factor
 
-    # Project FCF for each year in the forecasted period and calculate the discount factor
-    for year in years:
-        # Future free cash flow in year `year`, growing at the compounded growth rate
-        cf = latest_fcf * (1 + cfgrowth) ** year
-        ffcf.append(cf)
+    # Calculate the present value of projected FCFs for years 1 to 4
+    dcf_sum = sum(
+        (latest_fcf * (1 + cfgrowth) ** year) / discount_factors[year - 1]
+        for year in range(1, 5)
+    )
 
-        # Discount factor for the respective year, based on the required rate of return
-        df.append((1 + required_rate) ** year)
+    # Sum the discounted FCF and terminal value
+    total_value = dcf_sum + dtv
 
-    # Discount the future free cash flows to the present value using the discount factors
-    for i in range(len(years)):
-        dffcf.append(ffcf[i] / df[i])
-
-    # Discount the terminal value to the present value (using year 4's discount factor)
-    dtv = tv / (1 + required_rate) ** 4
-    dffcf.append(dtv)
-
-    # Sum of discounted cash flows (both projected FCFs and terminal value) gives today's total value
-    todays_value = sum(dffcf)
-
-    # Fair value per share is the total value divided by the number of shares outstanding
-    fair_value = todays_value / outstanding
-
-    return fair_value
+    # Return the fair value per share
+    return total_value / outstanding
 
 
 def fetch_valuation_data(
