@@ -54,14 +54,87 @@ def GrahamValuation(symbol, avg_aaa_rate, current_aaa_rate, pe_no_growth=8.5):
     return value, hist
 
 
-def fetch_valuation_data(symbol, avg_aaa, current_aaa):
+def DCFValuation(symbol, required_rate=0.07, perpetual_rate=0.02, cfgrowth=0.03):
+    """
+    Perform a Discounted Cash Flow (DCF) valuation for the given stock.
+
+    This function estimates the fair value of a stock using DCF analysis. It projects future Free Cash Flows (FCFs),
+    calculates the terminal value, discounts them to present value, and determines the fair value per share.
+
+    :param symbol: The stock ticker symbol (e.g., 'AAPL') as a string.
+    :param required_rate: The discount rate or required rate of return (as a decimal). Default is 7%.
+    :param perpetual_rate: The perpetual growth rate of FCF beyond the forecasted period (as a decimal). Default is 2%.
+    :param cfgrowth: The expected annual growth rate of the FCF for the forecasted period (as a decimal). Default is 3%.
+    :return: The fair value of the stock per share (float).
+    """
+
+    # Create a Ticker object from yfinance for the given stock symbol
+    ticker = yf.Ticker(symbol)
+
+    # Get the latest Free Cash Flow (FCF) value from the company's cash flow statement
+    # This assumes that the FCF is available and the 'Free Cash Flow' is the label in the DataFrame
+    latest_fcf = ticker.cash_flow.iloc[:, 0]["Free Cash Flow"]
+
+    # Get the number of shares outstanding (used to calculate per-share fair value)
+    outstanding = ticker.info["sharesOutstanding"]
+
+    # Define the number of years over which to forecast cash flow (4-year projection)
+    years = [1, 2, 3, 4]
+
+    # Lists to store future free cash flows (ffcf), discount factors (df), and discounted free cash flows (dffcf)
+    ffcf = []  # Future free cash flows
+    df = []  # Discount factors
+    dffcf = []  # Discounted future free cash flows
+
+    # Calculate the terminal value (TV) using the perpetuity growth formula
+    # Terminal value represents the value of cash flows beyond the forecast period
+    tv = latest_fcf * (1 + perpetual_rate) / (required_rate - perpetual_rate)
+
+    # Project FCF for each year in the forecasted period and calculate the discount factor
+    for year in years:
+        # Future free cash flow in year `year`, growing at the compounded growth rate
+        cf = latest_fcf * (1 + cfgrowth) ** year
+        ffcf.append(cf)
+
+        # Discount factor for the respective year, based on the required rate of return
+        df.append((1 + required_rate) ** year)
+
+    # Discount the future free cash flows to the present value using the discount factors
+    for i in range(len(years)):
+        dffcf.append(ffcf[i] / df[i])
+
+    # Discount the terminal value to the present value (using year 4's discount factor)
+    dtv = tv / (1 + required_rate) ** 4
+    dffcf.append(dtv)
+
+    # Sum of discounted cash flows (both projected FCFs and terminal value) gives today's total value
+    todays_value = sum(dffcf)
+
+    # Fair value per share is the total value divided by the number of shares outstanding
+    fair_value = todays_value / outstanding
+
+    return fair_value
+
+
+def fetch_valuation_data(
+    symbol, avg_aaa, current_aaa, required_rate, perpetual_rate, cfgrowth, model
+):
     value, hist = GrahamValuation(symbol, avg_aaa, current_aaa)
-    undervalued = value > hist
+    dcfvalue = DCFValuation(
+        symbol,
+        required_rate=required_rate,
+        perpetual_rate=perpetual_rate,
+        cfgrowth=cfgrowth,
+    )
+    if model == "dcf":
+        undervalued = dcfvalue > hist
+    else:
+        undervalued = value > hist
     status = calculate_valuation_difference(hist, value)
-    return symbol, hist, value, undervalued, status
+    return symbol, hist, value, undervalued, status, dcfvalue
 
 
-def main(stock):
+def main(stock, required_rate, perpetual_rate, cfgrowth):
     start_time = time.time()
     spy = yf.Ticker(stock)
     data = spy.funds_data
@@ -85,24 +158,40 @@ def main(stock):
     avg_aaa = 4.4  # FRED
     current_aaa = 4.68  # FRED
 
+    model = st.radio(
+        label="Model",
+        options=["dcf", "graham"],
+        horizontal=True,
+    )
+
     with st.spinner("Calculating..."):
         # Parallel processing for faster API calls
         with ThreadPoolExecutor() as executor:
             results = list(
                 executor.map(
-                    lambda symbol: fetch_valuation_data(symbol, avg_aaa, current_aaa),
+                    lambda symbol: fetch_valuation_data(
+                        symbol,
+                        avg_aaa,
+                        current_aaa,
+                        required_rate,
+                        perpetual_rate,
+                        cfgrowth,
+                        model,
+                    ),
                     tickers,
                 )
             )
 
         prices = []
         values = []
+        dcfvalues = []
         over, under = 0, 0
 
         for result in results:
-            symbol, hist, value, undervalued, status = result
+            symbol, hist, value, undervalued, status, dcfvalue = result
             prices.append(hist)
             values.append(value)
+            dcfvalues.append(dcfvalue)
             if undervalued:
                 under += 1
             else:
@@ -117,7 +206,9 @@ def main(stock):
             st.header("Undervalued")
             st.text(under)
 
-        df = pd.DataFrame({"tickers": tickers, "prices": prices, "values": values})
+        df = pd.DataFrame(
+            {"tickers": tickers, "prices": prices, "values": values, "dcf": dcfvalues}
+        )
 
         fig = go.Figure()
         fig.add_trace(
@@ -130,7 +221,18 @@ def main(stock):
         )
         fig.add_trace(
             go.Bar(
-                x=df["tickers"], y=df["values"], name="Valuations", marker_color="red"
+                x=df["tickers"],
+                y=df["values"],
+                name="Graham Valuations",
+                marker_color="red",
+            )
+        )
+        fig.add_trace(
+            go.Bar(
+                x=df["tickers"],
+                y=df["dcf"],
+                name="DCF Valuations",
+                marker_color="pink",
             )
         )
         fig.update_layout(
@@ -144,7 +246,20 @@ def main(stock):
 
 st.title("ETFHoldingsDecomp")
 stock = st.text_input("Enter a ETF ticker:", "SCHD")
-main(stock=stock)
+st.markdown("#### DCF Model Settings:")
+col1, col2, col3 = st.columns(3)
+with col1:
+    required_rate = st.number_input("Required Rate", 0.0, 1.0, step=0.01, value=0.07)
+with col2:
+    perpetual_rate = st.number_input("Perpetual Rate", 0.0, 1.0, step=0.01, value=0.02)
+with col3:
+    cfgrowth = st.number_input("CF Growth Rate", 0.0, 1.0, step=0.01, value=0.03)
+main(
+    stock=stock,
+    required_rate=required_rate,
+    perpetual_rate=perpetual_rate,
+    cfgrowth=cfgrowth,
+)
 
 if __name__ == "__main__":
     # main()
