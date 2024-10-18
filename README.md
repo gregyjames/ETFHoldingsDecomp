@@ -5,7 +5,8 @@
 </div>
 Values the top holdings of ETFs to assess if it is overall overvalued or undervalued at the current price. 
 
-## Running Locally
+### DEMO: [HERE](https://etfholdingsdecomp.streamlit.app/)
+### Running Locally
 ```shell
 uv run main.py
 ```
